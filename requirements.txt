@@ -1,9 +1,10 @@
 streamlit
 numpy
 pandas
+opencv-python
 scikit-learn
 dlib-bin
-git+https://github.com/ageitgey/face_recognition_models
+face-recognition
 setuptools<70.0.0
 supabase
 bcrypt
@@ -11,6 +12,8 @@ segno
 pillow
 librosa
 resemblyzer
+
+
 
 
 
