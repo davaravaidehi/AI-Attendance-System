@@ -20,7 +20,6 @@ pillow
 
 librosa
 resemblyzer
-cv2
 
 
 

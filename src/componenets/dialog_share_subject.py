@@ -4,7 +4,7 @@ import io
 
 @st.dialog("Share Subject")
 def share_subject_dialog(subject_name,subject_code):
-    app_domain = "snapclass-main.streamlit.app"
+    app_domain = "snapclassattend-main.streamlit.app"
     join_url = f"{app_domain}/?join_code={subject_code}"
 
     st.header("Scan to Join")
