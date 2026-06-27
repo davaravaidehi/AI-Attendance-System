@@ -1,4 +1,6 @@
+@"
 .env
+
 .vscode
 
 *.pyc
@@ -6,6 +8,8 @@
 __pycache__/
 
 venv/
+env/
 .streamlit/
 dist/
 *.log
+"@ | Out-File -FilePath .gitignore -Encoding utf8
