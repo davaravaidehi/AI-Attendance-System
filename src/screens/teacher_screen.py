@@ -1,7 +1,9 @@
+import re
+import time
 import streamlit as st
 from src.ui.base_layout import style_background_dashboard,style_base_layout
 from src.componenets.header import header_dashbourd
-from src.database.db import check_teacher_exists, create_teacher,teacher_login,get_teacher_subjects
+from src.database.db import check_teacher_exists, create_teacher,teacher_login,get_teacher_subjects, get_teacher_by_username, check_pass, get_all_teachers
 from src.componenets.dialog_create_subject import create_subject_dialog
 from src.database.db import create_subject,get_attendance_for_teacher
 from src.componenets.subject_card import subject_card
@@ -15,6 +17,7 @@ from src.database.config import supabase
 from datetime import datetime
 from src.componenets.dialog_attendance_results import attendance_result_dialog
 from src.componenets.dialog_voice_attendance import voice_attendance_dialog
+
 
 def teacher_screen():
     style_background_dashboard()
@@ -77,6 +80,7 @@ def teacher_dashbourd():
         teacher_tab_manage_subjects()
     if st.session_state.current_teacher_tab == "attendence_records":
         teacher_tab_attendence_records()
+
 
 def teacher_tab_take_attendence():
     teacher_id = st.session_state.teacher_data['teacher_id']
@@ -186,6 +190,7 @@ def teacher_tab_take_attendence():
         if st.button('Use Voice Attendance', type='primary',width='stretch'):
             voice_attendance_dialog(selected_subject_id)
 
+
 def teacher_tab_manage_subjects():
 
     teacher_id = st.session_state.teacher_data['teacher_id']
@@ -226,6 +231,7 @@ def teacher_tab_manage_subjects():
                 sub["name"],
                 sub["subject_code"]
             )
+
 
 def teacher_tab_attendence_records():
 
@@ -271,17 +277,69 @@ def teacher_tab_attendence_records():
     st.dataframe(display_df, width='stretch', hide_index=True)
 
 
-def login_teacher(username,password):
-    if not username or not password:
-        return False
-    
-    teacher = teacher_login(username,password)
+def login_teacher(username, password):
+    """Returns (success, field_errors_dict)
 
-    if teacher:
+    NOTE: To satisfy the requirement that a wrong-username-but-right-password
+    case shows only a username error, this checks the entered password
+    against ALL teacher accounts, not just the one matching the typed
+    username. This is unusual for production login forms (real systems never
+    reveal that a password matches someone else's account) but is done here
+    per project spec for a non-production student app.
+    """
+    field_errors = {}
+    username = (username or "").strip()
+
+    if not username:
+        field_errors['username'] = "Username is required"
+    if not password:
+        field_errors['pass'] = "Password is required"
+
+    if field_errors:
+        return False, field_errors
+
+    teacher = get_teacher_by_username(username)
+    username_valid = teacher is not None
+
+    # Does this password match the typed username's own account?
+    password_matches_this_account = bool(teacher and check_pass(password, teacher['password']))
+
+    # Does this password match ANY teacher account at all?
+    password_valid_somewhere = password_matches_this_account
+    if not password_valid_somewhere:
+        for t in get_all_teachers():
+            if check_pass(password, t['password']):
+                password_valid_somewhere = True
+                break
+
+    # Success: username exists AND password matches that same account
+    if username_valid and password_matches_this_account:
         st.session_state.user_role = 'teacher'
         st.session_state.teacher_data = teacher
         st.session_state.is_logged_in = True
-        return True
+        return True, {}
+
+    # Both wrong
+    if not username_valid and not password_valid_somewhere:
+        field_errors['username'] = "Username is incorrect"
+        field_errors['pass'] = "Password is incorrect"
+        return False, field_errors
+
+    # Username correct, password wrong for this account
+    if username_valid and not password_matches_this_account:
+        field_errors['pass'] = "Password is incorrect"
+        return False, field_errors
+
+    # Username incorrect, but password is valid for some account
+    if not username_valid and password_valid_somewhere:
+        field_errors['username'] = "Username is incorrect"
+        return False, field_errors
+
+    # Fallback (shouldn't normally hit this)
+    field_errors['pass'] = "Password is incorrect"
+    return False, field_errors
+
+
 def teacher_screen_login():
     c1,c2 = st.columns(2,vertical_alignment = 'center',gap='xxlarge')
     with c1:
@@ -297,94 +355,173 @@ def teacher_screen_login():
     st.space()
     st.space()
 
-    teacher_username = st.text_input("Enter Username",placeholder='Enter your name') 
+    if "login_field_errors" not in st.session_state:
+        st.session_state.login_field_errors = {}
+    errors = st.session_state.login_field_errors
+
+    teacher_username = st.text_input("Enter Username",placeholder='Enter your name')
+    if errors.get('username'):
+        st.error(errors['username'])
+
     teacher_pass = st.text_input("Enter password",type='password',placeholder='Enter Password')
+    if errors.get('pass'):
+        st.error(errors['pass'])
+
     st.divider()
     btnc1,btnc2 = st.columns(2)
     with btnc1:
         if st.button('Login',icon=':material/passkey:',shortcut='control+enter',width='stretch'):
-            if login_teacher(teacher_username,teacher_pass):
+            success, field_errors = login_teacher(teacher_username, teacher_pass)
+            if success:
+                st.session_state.login_field_errors = {}
                 st.toast("welcome back!")
-                import time
                 time.sleep(1)
                 st.rerun()
             else:
-                st.error("Invalid username and password combo")
+                st.session_state.login_field_errors = field_errors
+                st.rerun()
 
     with btnc2:
         if st.button('Register Instead',type="primary",icon=':material/passkey:',width='stretch'):
+            st.session_state.login_field_errors = {}
             st.session_state.teacher_login_type = 'register'
+            st.rerun()
 
 
-def register_teacher(teacher_username,teacher_name,teacher_pass, teacher_pass_confirm):
-    print("username =", repr(teacher_username))
-    print("name =", repr(teacher_name))
-    print("pass =", repr(teacher_pass))
-    print("confirm =", repr(teacher_pass_confirm))
+# ---------------------------------------------------------------------------
+# Registration: field-level validation + password rules + success dialog
+# ---------------------------------------------------------------------------
 
-    if not teacher_username or not teacher_name or not teacher_pass or not teacher_pass_confirm:
-        return False, "All Fields are required!"
+def validate_password(pwd):
+    """Returns (is_valid, list_of_error_messages)"""
+    errors = []
+    if len(pwd) < 8:
+        errors.append("At least 8 characters")
+    if not re.search(r"[A-Z]", pwd):
+        errors.append("At least 1 uppercase letter")
+    if not re.search(r"[0-9]", pwd):
+        errors.append("At least 1 number")
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>_\-]", pwd):
+        errors.append("At least 1 special character")
+    return (len(errors) == 0, errors)
+
+
+def register_teacher(teacher_username, teacher_name, teacher_pass, teacher_pass_confirm):
+    """Returns (success, message, field_errors_dict)"""
+    field_errors = {}
+
+    if not teacher_username:
+        field_errors['username'] = "Username is required"
+    if not teacher_name:
+        field_errors['name'] = "Name is required"
+    if not teacher_pass:
+        field_errors['pass'] = "Password is required"
+    if not teacher_pass_confirm:
+        field_errors['confirm'] = "Please confirm your password"
+
+    # Stop early if any required field is empty
+    if field_errors:
+        return False, "Please fill in all required fields", field_errors
+
+    # Password strength check
+    is_valid, pwd_errors = validate_password(teacher_pass)
+    if not is_valid:
+        field_errors['pass'] = "Missing: " + ", ".join(pwd_errors)
+        return False, "Password does not meet requirements", field_errors
+
+    if teacher_pass != teacher_pass_confirm:
+        field_errors['confirm'] = "Passwords do not match"
+        return False, "Passwords do not match", field_errors
+
     try:
         if check_teacher_exists(teacher_username):
-            return False, "Username already taken"
+            field_errors['username'] = "Username already taken"
+            return False, "Username already taken", field_errors
     except Exception as e:
-        return False, f"Database Error: {e}"
-    if teacher_pass != teacher_pass_confirm:
-        return False, "Password doesn't match"
-    
+        return False, f"Database Error: {e}", {}
+
     try:
-        create_teacher(teacher_username,teacher_pass,teacher_name)
-        return True, "Successfully Created Login Now"
+        create_teacher(teacher_username, teacher_pass, teacher_name)
+        return True, "Account created successfully!", {}
     except Exception as e:
-        return False, f"Unexpected Error!:{e}"
+        return False, f"Unexpected Error: {e}", {}
+
+
+@st.dialog("Success")
+def registration_success_dialog():
+    st.success("🎉 Registration Successful!")
+    st.write("Your teacher account has been created. You can now log in.")
+    if st.button("OK", type='primary', width='stretch'):
+        st.session_state.teacher_login_type = 'login'
+        st.session_state.register_field_errors = {}
+        st.rerun()
 
 
 def teacher_screen_register():
-    c1,c2 = st.columns(2,vertical_alignment = 'center',gap='xxlarge')
+    c1, c2 = st.columns(2, vertical_alignment='center', gap='xxlarge')
     with c1:
         header_dashbourd()
 
     with c2:
-        if st.button("Go Back to Home", type='secondary',shortcut="control+backspace"):
+        if st.button("Go Back to Home", type='secondary',key='backbtn_register', shortcut="control+backspace"):
             st.session_state['login_type'] = None
             st.rerun()
+
     st.space()
     st.space()
-    st.header('Registre Your Profile', text_alignment='center')
+    st.header('Register Your Profile', text_alignment='center')
     st.space()
     st.space()
-    teacher_username = st.text_input("Enter Username",placeholder='isnam@12') 
-    teacher_name = st.text_input("Enter name",placeholder='Mansi Chauhan') 
-    teacher_pass = st.text_input("Password",type='password',placeholder='Enter Password',key="teacher_pass")
-    teacher_pass_confirm = st.text_input("Confirm Password",type='password',placeholder='Confirm your Password', key="teacher_pass_confirm")
+
+    if "register_field_errors" not in st.session_state:
+        st.session_state.register_field_errors = {}
+    errors = st.session_state.register_field_errors
+
+    teacher_username = st.text_input("Enter Username", placeholder='isnam@12')
+    if errors.get('username'):
+        st.error(errors['username'])
+
+    teacher_name = st.text_input("Enter name", placeholder='Mansi Chauhan')
+    if errors.get('name'):
+        st.error(errors['name'])
+
+    teacher_pass = st.text_input(
+        "Password", type='password',
+        placeholder='Min 8 chars, 1 uppercase, 1 number, 1 special char',
+        key="teacher_pass"
+    )
+    if errors.get('pass'):
+        st.error(errors['pass'])
+
+    teacher_pass_confirm = st.text_input(
+        "Confirm Password", type='password',
+        placeholder='Confirm your Password', key="teacher_pass_confirm"
+    )
+    if errors.get('confirm'):
+        st.error(errors['confirm'])
+
     st.divider()
-    btnc1,btnc2 = st.columns(2)
+    btnc1, btnc2 = st.columns(2)
 
     with btnc1:
-        if st.button('Register now',
-                 icon=':material/passkey:',
-                 shortcut='control+enter',
-                 width='stretch'):
-            st.write("Username:", repr(teacher_username))
-            st.write("Name:", repr(teacher_name))
-            st.write("Password:", repr(teacher_pass))
-            st.write("Confirm:", repr(teacher_pass_confirm))
-
-            success, message = register_teacher(
+        if st.button('Register now', icon=':material/passkey:',
+                     shortcut='control+enter', width='stretch'):
+            success, message, field_errors = register_teacher(
                 teacher_username,
                 teacher_name,
                 teacher_pass,
                 teacher_pass_confirm
             )
 
-            st.write("Result:", success, message)
-
-
+            if success:
+                st.session_state.register_field_errors = {}
+                registration_success_dialog()
+            else:
+                st.session_state.register_field_errors = field_errors
+                st.rerun()
 
     with btnc2:
-        if st.button('Login Instead',type="primary",icon=':material/passkey:',width='stretch'):
-            st.session_state.teacher_login_type= 'login'
+        if st.button('Login Instead', type="primary", icon=':material/passkey:', width='stretch'):
+            st.session_state.register_field_errors = {}
+            st.session_state.teacher_login_type = 'login'
             st.rerun()
-
-
-

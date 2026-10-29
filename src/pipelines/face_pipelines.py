@@ -13,20 +13,16 @@ from src.database.db import get_all_students
 def load_dlib_models():
     detector = dlib.get_frontal_face_detector()
 
-
-
     sp = dlib.shape_predictor(
         face_recognition_models.pose_predictor_model_location()
     )
-
-
 
     facerec = dlib.face_recognition_model_v1(
         face_recognition_models.face_recognition_model_location()
     )
 
-
     return detector,sp,facerec
+
 
 def get_face_embeddings(image_np):
 
@@ -59,58 +55,6 @@ def get_face_embeddings(image_np):
         encodings.append(np.array(face_descriptor))
 
     return encodings
-
-def predict_attendance(class_image_np):
-
-    encodings = get_face_embeddings(class_image_np)
-
-    detected_student = {}
-
-    model_data = get_trained_model()
-
-
-    if not model_data:
-        return detected_student, [], len(encodings)
-
-
-    x = model_data['x']
-    y = model_data['y']
-
-
-    for encoding in encodings:
-
-
-        best_distance = 999
-        best_student = None
-
-
-        for index, known_embedding in enumerate(x):
-
-            distance = np.linalg.norm(
-                known_embedding - encoding
-            )
-
-
-            if distance < best_distance:
-                best_distance = distance
-                best_student = y[index]
-
-
-        print(
-            "MATCH:",
-            best_student,
-            "DISTANCE:",
-            best_distance
-        )
-
-
-        # better threshold
-        if best_distance < 0.6:
-
-            detected_student[str(best_student)] = True
-
-
-    return detected_student, list(set(y)), len(encodings)
 
 
 @st.cache_resource
@@ -145,8 +89,18 @@ def train_classifire():
     return bool(model_data)
 
 
-
 def predict_attendance(class_image_np):
+    """
+    Matches faces in the photo against known students.
+
+    IMPORTANT: uses a distance threshold AND a confidence margin.
+    A plain "closest distance < 0.6" check can wrongly match a brand-new,
+    unregistered face to whichever existing student happens to be nearest
+    by chance. Requiring the best match to also be meaningfully closer
+    than the second-best match (margin check) makes that far less likely,
+    so new faces correctly fall through to registration instead of being
+    logged in as someone else.
+    """
 
     encodings = get_face_embeddings(class_image_np)
 
@@ -154,46 +108,35 @@ def predict_attendance(class_image_np):
 
     model_data = get_trained_model()
 
-
     if not model_data:
         return detected_student, [], len(encodings)
-
 
     x = model_data['x']
     y = model_data['y']
 
+    DISTANCE_THRESHOLD = 0.55   # slightly stricter than before
+    MIN_MARGIN = 0.08           # best match must beat 2nd-best by this much
 
     for encoding in encodings:
 
+        # collect distances to every known embedding
+        distances = [
+            (np.linalg.norm(known_embedding - encoding), student_id)
+            for known_embedding, student_id in zip(x, y)
+        ]
+        distances.sort(key=lambda d: d[0])
 
-        best_distance = 999
-        best_student = None
+        best_distance, best_student = distances[0]
+        second_distance = distances[1][0] if len(distances) > 1 else None
 
+        print("MATCH:", best_student, "DISTANCE:", best_distance,
+              "SECOND:", second_distance)
 
-        for index, known_embedding in enumerate(x):
-
-            distance = np.linalg.norm(
-                known_embedding - encoding
-            )
-
-
-            if distance < best_distance:
-                best_distance = distance
-                best_student = y[index]
-
-
-        print(
-            "MATCH:",
-            best_student,
-            "DISTANCE:",
-            best_distance
+        is_confident_match = best_distance < DISTANCE_THRESHOLD and (
+            second_distance is None or (second_distance - best_distance) >= MIN_MARGIN
         )
 
-
-        # better threshold
-        if best_distance < 0.6:
-
+        if is_confident_match:
             detected_student[str(best_student)] = True
-
 
     return detected_student, list(set(y)), len(encodings)
