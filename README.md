@@ -180,5 +180,3 @@ Open `http://localhost:8501` in your browser.
 
 ---
 
-umentation](https://pandas.pydata.org/docs/)
-- [Supabase Documentation](https://supabase.com/docs)
