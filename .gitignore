@@ -1,15 +1,14 @@
 @"
 .env
-
-.vscode
-
+.vscode/
 *.pyc
 .DS_Store
 __pycache__/
 
 venv/
 env/
-.streamlit/
+env.zip
+.streamlit/secrets.toml
 dist/
 *.log
-"@ | Out-File -FilePath .gitignore -Encoding utf8
+"@ | Out-File -FilePath .gitignore -Encoding ascii
